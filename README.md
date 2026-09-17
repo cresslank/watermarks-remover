@@ -486,8 +486,18 @@ set -a; . ./.env; set +a; python3 service/scripts/rewrite_text.py /tmp/x.txt -o 
 | `WATERMARKS_CLEAN_STRATEGY_FILE` | `server.py` `/clean` | Path to the Layer B strategy config JSON (default `config/clean_strategy.json`) |
 | `WATERMARKS_GUMBEL_KEY` | `detect_gumbel.py` / `text_detectors.py` | Secret key for keyed-Gumbel (EXP) same-key replay (e.g. `0x…`); preferred over argv — never logged |
 
-**Layer B is required for text cleaning.** `/clean` always applies the default
+**Layer B is required for text cleaning by default.** `/clean` applies the default
 strategy (from `config/clean_strategy.json`, `{"default_strategy": "paraphrase@0.8,mlm@0.2"}`) to a text file after Layer A, unless the request passes its own `"strategy"` option (an ordered `tactic@intensity` list). A strategy step is `tactic@intensity`; the `mlm` step needs `transformers` + `roberta-large`, and any LLM step (`paraphrase`, `humanize`, …) needs the `WATERMARKS_REWRITE_*` config. If the required backend/model isn't configured — or no strategy is available — `/clean` **rejects the request with a 400**. Precedence for the config path: `--strategy-config` CLI flag > `WATERMARKS_CLEAN_STRATEGY_FILE` env var > the default `config/clean_strategy.json`.
+
+For an explicitly model-free service, set `WATERMARKS_TEXT_CLEAN_MODE=layer-a`
+(or `server.py --text-clean-mode layer-a`). This restores deterministic Unicode
+cleaning for default text requests without loading models or calling a rewrite
+endpoint. `/capabilities.text_clean_mode` advertises the selected mode and the
+clean report records `layer_b.applied=false`: **statistical watermarks are not
+removed by Layer A**. An explicit `options.strategy` still requests Layer B and
+fails with 400 if its backend is unavailable; errors never silently downgrade to
+Layer A. The upstream default remains `layer-b`; CLI overrides the environment,
+and invalid modes fail at startup. Image/container metadata cleaning is unchanged.
 
 Images publish automatically on `v*` tags via [`.github/workflows/release-images.yml`](.github/workflows/release-images.yml).
 

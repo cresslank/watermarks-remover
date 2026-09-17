@@ -120,8 +120,9 @@ ALLOWED_CLEAN_OPTIONS = {
 }
 
 # Default Layer B strategy loaded from the strategy config file (overridable by
-# env/CLI). None means no Layer B rewrite on text.
+# env/CLI). Missing strategies are rejected unless Layer A mode is explicit.
 _DEFAULT_STRATEGY: str | None = None
+_TEXT_CLEAN_MODE = "layer-b"
 
 
 @cache
@@ -199,6 +200,7 @@ def _tool_usable(cmd: str) -> bool:
 def capabilities() -> dict[str, Any]:
     return {
         "version": VERSION,
+        "text_clean_mode": _TEXT_CLEAN_MODE,
         "tools": {
             "c2patool": _tool_usable("c2patool"),
             "exiftool": _tool_usable("exiftool"),
@@ -941,7 +943,7 @@ def _parse_clean_options(options: Any) -> dict[str, Any]:
 def _load_default_strategy(config_path: Path) -> str | None:
     """Read the default Layer B strategy from the config file.
 
-    Returns None when the config file is absent (no Layer B on text). A file that
+    Returns None when the config file is absent (no default strategy). A file that
     is present but malformed (bad JSON, unknown tactic, bad intensity) is a
     startup error, since the config is explicit in-repo.
     """
@@ -1252,17 +1254,25 @@ def _clean_payload(data: bytes, name: str, options: dict[str, Any]) -> dict[str,
                 aggressive_homoglyphs=bool(options.get("aggressive_homoglyphs")),
                 normalize_spaces=bool(options.get("normalize_spaces", True)),
             )
-            # Layer B is a required step for text cleaning: always apply the
-            # default (or per-request) rewrite strategy and reject (400) when no
-            # strategy is available or a step's backend/model can't run.
-            strategy = options.get("strategy") or _DEFAULT_STRATEGY
-            if not strategy:
-                raise ValueError(
-                    "Layer B rewrite is required for text cleaning; configure a "
-                    "default strategy (config/clean_strategy.json) or pass "
-                    "options.strategy"
-                )
-            cleaned, layer_b = _apply_layer_b(cleaned, strategy, options)
+            # Preserve required Layer B by default. Model-free deployments may
+            # explicitly select Layer A; an explicit request strategy still runs
+            # (or fails) normally, never silently falling back after an error.
+            strategy = options.get("strategy")
+            if _TEXT_CLEAN_MODE == "layer-b":
+                strategy = strategy or _DEFAULT_STRATEGY
+                if not strategy:
+                    raise ValueError(
+                        "Layer B rewrite is required for text cleaning; configure a "
+                        "default strategy (config/clean_strategy.json) or pass "
+                        "options.strategy"
+                    )
+            if strategy:
+                cleaned, layer_b = _apply_layer_b(cleaned, strategy, options)
+            else:
+                layer_b = {
+                    "applied": False,
+                    "reason": "layer-a mode; statistical watermarks are not removed",
+                }
             if detect_after:
                 detector_reports["after"] = run_text_detectors(cleaned)
             cleaned_bytes = cleaned.encode("utf-8", errors="surrogateescape")
@@ -1680,8 +1690,19 @@ def main() -> int:
         "config/clean_strategy.json; WATERMARKS_CLEAN_STRATEGY_FILE). A strategy "
         "step is 'tactic@intensity' (e.g. 'paraphrase@0.8,mlm@0.2').",
     )
+    p.add_argument(
+        "--text-clean-mode",
+        choices=("layer-a", "layer-b"),
+        default=os.environ.get("WATERMARKS_TEXT_CLEAN_MODE", "layer-b"),
+        help="Default text cleaning: layer-b requires a rewrite (default); layer-a "
+        "only scrubs Unicode unless options.strategy explicitly requests a rewrite. "
+        "WATERMARKS_TEXT_CLEAN_MODE sets the default; statistical marks survive Layer A.",
+    )
     p.add_argument("-V", "--version", action="store_true", help="print version and exit")
     args = p.parse_args()
+    # argparse does not validate choices for an environment-supplied default.
+    if args.text_clean_mode not in ("layer-a", "layer-b"):
+        p.error("WATERMARKS_TEXT_CLEAN_MODE must be layer-a or layer-b")
 
     if args.version:
         print(VERSION)
@@ -1690,6 +1711,8 @@ def main() -> int:
     API_KEY = args.api_key
     global _DEFAULT_STRATEGY  # noqa: PLW0603 — loaded once at startup
     _DEFAULT_STRATEGY = _load_default_strategy(Path(args.strategy_config))
+    global _TEXT_CLEAN_MODE  # noqa: PLW0603 — selected once at startup
+    _TEXT_CLEAN_MODE = args.text_clean_mode
 
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         eprint(f"warning: binding {args.host} — intended for a trusted network only")
