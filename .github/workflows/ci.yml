@@ -13,7 +13,9 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    # Opt-in only; FORK_MACOS_EXCLUDE is a JSON list of job keys.
+    # Unset FORK_MACOS_RUNNER to retain the original hosted runners.
+    runs-on: ${{ vars.FORK_MACOS_RUNNER && matrix.os == 'macos-latest' && !contains(fromJSON(vars.FORK_MACOS_EXCLUDE || '[]'), 'test') && github.actor == github.repository_owner && github.triggering_actor == github.repository_owner && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.FORK_MACOS_RUNNER) || matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
